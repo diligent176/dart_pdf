@@ -117,9 +117,25 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
                     controller.print(to: selectedPrinters[printerURLString]!, completionHandler: self.completionHandler)
                 }
             } else {
-                controller.present(animated: true, completionHandler: self.completionHandler)
+                self.presentPrintController(controller, completion: self.completionHandler)
             }
         }
+    }
+
+    // present(animated:completionHandler:) is iPhone-only and silently no-ops on iPad
+    // (returns false, callback never invoked). On .pad it needs a source rect/view, same
+    // idiom pickPrinter() already uses below for the printer-picker popover.
+    private func presentPrintController(_ controller: UIPrintInteractionController, completion: @escaping UIPrintInteractionController.CompletionHandler) {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            let viewController: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
+            if let view = viewController?.view {
+                let rect = CGRect(x: view.bounds.maxX - 88, y: view.safeAreaInsets.top, width: 88, height: 44)
+                controller.present(from: rect, in: view, animated: true, completionHandler: completion)
+                return
+            }
+        }
+
+        controller.present(animated: true, completionHandler: completion)
     }
 
     override public var numberOfPages: Int {
@@ -239,7 +255,7 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         }
 
         if dynamic {
-            controller.present(animated: true, completionHandler: completionHandler)
+            presentPrintController(controller, completion: completionHandler)
             return
         }
 
