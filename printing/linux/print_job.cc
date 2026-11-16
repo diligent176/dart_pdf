@@ -22,9 +22,13 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <string>
 
+#include <fpdf_edit.h>
+#include <fpdf_ppo.h>
+#include <fpdf_save.h>
 #include <fpdfview.h>
 
 print_job::print_job(int index) : index(index) {}
@@ -161,6 +165,22 @@ bool print_job::print_pdf(const gchar* name,
               gtk_print_unix_dialog_get_settings(GTK_PRINT_UNIX_DIALOG(dialog));
           setup = gtk_print_unix_dialog_get_page_setup(
               GTK_PRINT_UNIX_DIALOG(dialog));
+          // BandBinder #7902: GtkPrintJob sends the source file as is, so the
+          // range is kept here and write_job sends only those pages.
+          if (gtk_print_settings_get_print_pages(settings) ==
+              GTK_PRINT_PAGES_RANGES) {
+            gint n = 0;
+            auto ranges = gtk_print_settings_get_page_ranges(settings, &n);
+            for (gint i = 0; i < n; i++) {
+              pageRanges.emplace_back(ranges[i].start, ranges[i].end);
+            }
+            g_free(ranges);
+            printRange = true;
+          }
+          if (gtk_print_settings_get_print_pages(settings) !=
+              GTK_PRINT_PAGES_ALL) {
+            gtk_print_settings_set_print_pages(settings, GTK_PRINT_PAGES_ALL);
+          }
           gtk_widget_hide(GTK_WIDGET(dialog));
           loop = false;
         } break;
@@ -201,7 +221,88 @@ bool print_job::print_pdf(const gchar* name,
   return true;
 }
 
+static void init_pdfium() {
+  FPDF_LIBRARY_CONFIG config;
+  config.version = 2;
+  config.m_pUserFontPaths = nullptr;
+  config.m_pIsolate = nullptr;
+  config.m_v8EmbedderSlot = 0;
+  FPDF_InitLibraryWithConfig(&config);
+}
+
+struct pdf_writer : FPDF_FILEWRITE {
+  std::string* out;
+};
+
+static int append_block(FPDF_FILEWRITE* pThis,
+                        const void* pData,
+                        unsigned long size) {
+  static_cast<pdf_writer*>(pThis)->out->append(static_cast<const char*>(pData),
+                                               size);
+  return 1;
+}
+
+// Builds a PDF holding only the pages of the dialog's 0-based inclusive
+// ranges, in order. An open-ended range ("3-") arrives with a negative end.
+static bool extract_pages(const uint8_t data[],
+                          size_t size,
+                          const std::vector<std::pair<int, int>>& ranges,
+                          std::string& out) {
+  init_pdfium();
+  auto src = FPDF_LoadMemDocument64(data, size, nullptr);
+  if (!src) {
+    return false;
+  }
+
+  auto pageCount = FPDF_GetPageCount(src);
+  std::vector<int> pages;
+  for (auto& range : ranges) {
+    auto start = std::max(range.first, 0);
+    auto end = range.second < 0 ? pageCount - 1
+                                : std::min(range.second, pageCount - 1);
+    for (auto p = start; p <= end; p++) {
+      pages.push_back(p);
+    }
+  }
+
+  auto ok = false;
+  if (!pages.empty()) {
+    auto dst = FPDF_CreateNewDocument();
+    if (dst) {
+      if (FPDF_ImportPagesByIndex(dst, src, pages.data(), pages.size(), 0)) {
+        pdf_writer writer;
+        writer.version = 1;
+        writer.WriteBlock = append_block;
+        writer.out = &out;
+        ok = FPDF_SaveAsCopy(dst, &writer, FPDF_NO_INCREMENTAL) &&
+             !out.empty();
+      }
+      FPDF_CloseDocument(dst);
+    }
+  }
+
+  FPDF_CloseDocument(src);
+  return ok;
+}
+
 void print_job::write_job(const uint8_t data[], size_t size) {
+  std::string subset;
+  if (printRange) {
+    if (!extract_pages(data, size, pageRanges, subset)) {
+      // Never fall back to every page.
+      if (dialog) {
+        gtk_widget_destroy(GTK_WIDGET(dialog));
+        dialog = nullptr;
+      }
+      g_object_unref(printJob);
+      printJob = nullptr;
+      on_completed(this, false, "No page of the chosen range can be printed");
+      return;
+    }
+    data = reinterpret_cast<const uint8_t*>(subset.data());
+    size = subset.size();
+  }
+
   auto fd = syscall(SYS_memfd_create, "printing", 0);
   size_t offset = 0;
   ssize_t n;
@@ -249,12 +350,7 @@ void print_job::raster_pdf(const uint8_t data[],
                            const int32_t pages[],
                            size_t pages_count,
                            double scale) {
-  FPDF_LIBRARY_CONFIG config;
-  config.version = 2;
-  config.m_pUserFontPaths = nullptr;
-  config.m_pIsolate = nullptr;
-  config.m_v8EmbedderSlot = 0;
-  FPDF_InitLibraryWithConfig(&config);
+  init_pdfium();
 
   auto doc = FPDF_LoadMemDocument64(data, size, nullptr);
   if (!doc) {

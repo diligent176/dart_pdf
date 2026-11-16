@@ -25,10 +25,15 @@
 #include <gtk/gtk.h>
 #include <gtk/gtkunixprint.h>
 
+#include <utility>
+#include <vector>
+
 class print_job {
  private:
   const int index;
   GtkPrintJob* printJob = nullptr;
+  bool printRange = false;
+  std::vector<std::pair<int, int>> pageRanges;
 
  public:
   GtkPrintUnixDialog* dialog = nullptr;
