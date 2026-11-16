@@ -159,12 +159,12 @@ bool print_job::print_pdf(const gchar* name,
 
       switch (response) {
         case GTK_RESPONSE_OK: {
-          _printer = gtk_print_unix_dialog_get_selected_printer(
-              GTK_PRINT_UNIX_DIALOG(dialog));
+          _printer = GTK_PRINTER(g_object_ref(gtk_print_unix_dialog_get_selected_printer(
+              GTK_PRINT_UNIX_DIALOG(dialog))));
           settings =
               gtk_print_unix_dialog_get_settings(GTK_PRINT_UNIX_DIALOG(dialog));
-          setup = gtk_print_unix_dialog_get_page_setup(
-              GTK_PRINT_UNIX_DIALOG(dialog));
+          setup = GTK_PAGE_SETUP(g_object_ref(gtk_print_unix_dialog_get_page_setup(
+              GTK_PRINT_UNIX_DIALOG(dialog))));
           // BandBinder #7902: GtkPrintJob sends the source file as is, so the
           // range is kept here and write_job sends only those pages.
           if (gtk_print_settings_get_print_pages(settings) ==
